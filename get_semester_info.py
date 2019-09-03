@@ -80,6 +80,8 @@ def get_courses(subject_name, semester):
 
 
 def parse_class_time(classtime):
+	if classtime == "TBA":
+		return { "start_time": "TBA", "end_time": "TBA" }
 	classtime = classtime.upper().strip().split(" - ")
 
 	start_time = arrow.get(classtime[0], "h:mm A")
@@ -92,6 +94,7 @@ def parse_class_time(classtime):
 
 
 def parse_meeting_days(days):
+	days = days.replace('\xa0', "")
 	days = list(days)
 
 	day_dict = {
@@ -109,29 +112,52 @@ def parse_meeting_days(days):
 
 
 def parse_course_meeting_times(schedule_data_table):
-	row = schedule_data_table.find_all("tr")[1]
+	rows = schedule_data_table.find_all("tr")[1:]
 	
-	data = row.find_all("td")
+	all_meetings = []
 
-	class_times = parse_class_time(data[1].text)
+	for row in rows:
+		data = row.find_all("td")
 
-	meeting_days = parse_meeting_days(data[2].text)
+		class_times = parse_class_time(data[1].text)
 
-	location = data[3].text
+		if '\xa0' in data[2].text:
+			pprint(data)
 
-	course_meeting_info = {
-		"class_times":	class_times,
-		"meeting_days":	meeting_days,
-		"location":     location,
+		meeting_days = parse_meeting_days(data[2].text)
+
+		location = data[3].text
+
+		course_meeting_info = {
+			"class_times":	class_times,
+			"meeting_days":	meeting_days,
+			"location":     location,
+		}
+
+		all_meetings.append(course_meeting_info)
+
+	return all_meetings
+
+
+def convert_term_to_shorthand(termstr):
+	term = termstr.split(" ")
+
+	term_to_month = {
+		"Fall": 	"09",
+		"Spring": "01",
+		"Summer": "06",
 	}
 
-	return course_meeting_info
+	shorthand = f"{term[1]}{term_to_month[term[0]]}"
+
+	return shorthand
 
 
 def parse_other_info(course_entry_text):
 	credits_re = re.compile("(\d{1,2}\.\d+)\s(?=Credits)")
 	campus_re = re.compile("(\w+)\s(?=Campus)")
 	level_re = re.compile("(?<=Levels: )(.+)") 		# dear god this regex is a bad idea
+	term_re = re.compile("(?<=Associated Term:\s)(.+)")
 
 	credits_search = credits_re.search(course_entry_text)
 	if credits_search:
@@ -152,10 +178,18 @@ def parse_other_info(course_entry_text):
 	else:
 		level = []
 
+	term_search = term_re.search(course_entry_text)
+	if term_search:
+		associated_term = term_search.groups(0)[0].strip()
+	else:
+		associated_term = ""
+
 	other_info = {
 		"credits":	credits,
 		"campus":		campus,
 		"level":    level,
+		"associated_term": associated_term,
+		"shorthand_term":  convert_term_to_shorthand(associated_term),
 	}
 
 	return other_info
@@ -197,7 +231,7 @@ def parse_course(course_rows):
 	meeting_times = course_entry.find("table", class_="datadisplaytable")
 	meeting_info = parse_course_meeting_times(meeting_times)
 
-	course_info.update(meeting_info)
+	course_info["meeting_times"] = meeting_info
 
 	prereqs, prereq_str = get_prerequisite_classes(course_info["notes"])
 	course_info["notes"] = course_info["notes"].replace(prereq_str, "")
@@ -218,7 +252,7 @@ if __name__ in "__main__":
 
 	subjects = get_subjects_for_semester(terms[1])
 
-	ids_courses = get_courses("IDS", "201909")
+	ids_courses = get_courses("IDS", "201901")
 	course_table = ids_courses.find("table", class_="datadisplaytable")
 	tbody = course_table.find("tbody")
 
