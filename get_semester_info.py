@@ -149,11 +149,15 @@ def parse_course_meeting_times(schedule_data_table):
 def convert_term_to_shorthand(termstr):
 	term = termstr.split(" ")
 
+	if "pre-summer session" in termstr.lower():
+		term = [ "Pre-Summer", term[-1] ]
+
 	term_to_month = {
 		"Fall": 	    "09",
 		"Spring":     "01",
 		"Summer":     "06",
-		"Pre-Summer": "04"
+		"Pre-Summer": "04",
+		"Winter":     "12",
 	}
 
 	shorthand = f"{term[1]}{term_to_month[term[0]]}"
