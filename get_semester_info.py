@@ -198,9 +198,9 @@ def parse_other_info(course_entry_text):
 
 	other_info = {
 		"credits":         credits,
-		"campus":          campus,
+		"campus":          campus.strip(),
 		"available_to": 	 level,
-		"associated_term": associated_term,
+		"associated_term": associated_term.strip(),
 		"shorthand_term":  convert_term_to_shorthand(associated_term),
 	}
 
@@ -241,6 +241,8 @@ def parse_course(course_rows):
 	split_subject = course_info["course_number"].split(" ")
 	course_info["course_department"] = split_subject[0]
 	course_info["course_level"] = split_subject[1]
+
+	course_info["course_number"] = course_info["course_number"].replace("/", "").replace("\\", "")
 
 	other_info = parse_other_info(course_entry.text)
 
