@@ -35,6 +35,8 @@ def get_prerequisite_classes(course_notes):
 	all_prereqs = list(set(named_courses + fresh_named_courses))
 
 	note_rm_line = "".join([prereq_search.groups()[0], prereq_line])
+
+	all_prereqs = [ a.replace("/", "").replace("\\", "").strip() for a in all_prereqs ]
 	
 	return all_prereqs, note_rm_line
 
