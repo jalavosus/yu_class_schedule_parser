@@ -1,10 +1,11 @@
+import os
 import re
 import copy
 import json
 import arrow
-import MySQLdb
 import requests
 import warnings
+import psycopg2
 
 from pprint import pprint
 from bs4 import BeautifulSoup
@@ -19,6 +20,7 @@ TERM_SUBJECTS_URL = "https://selfserveprod.yu.edu/pls/banprd/bwckgens.p_proc_ter
 COURSE_SEARCH_URL = "https://selfserveprod.yu.edu/pls/banprd/bwckschd.p_get_crse_unsec"
 
 
+
 SUBJECTS_FORM_DATA = { "p_calling_proc": "bwckschd.p_disp_dyn_sched", "p_term": "" }
 
 DUMMY = "dummy"
@@ -26,9 +28,12 @@ DUMMY_LIST = [ DUMMY, "%" ]
 
 COURSE_SEARCH_FORM_DATA = {"term_in": "",          "sel_subj": [ DUMMY, "" ], "sel_crse": "", 
                            "sel_day": DUMMY,       "sel_schd": DUMMY,         "sel_insm": DUMMY, "sel_camp": DUMMY_LIST,
-													 "sel_sess": DUMMY_LIST, "sel_instr": DUMMY_LIST,   "sel_ptrm": DUMMY, "sel_attr": DUMMY_LIST,
-													 "sel_title": "",        "sel_from_cred": "",       "sel_to_cred": "", "begin_hh": 0, "begin_mi": 0, 
-													 "begin_ap": "a",        "end_hh": 0, "end_mi": 0,  "end_ap": "a",     "sel_levl": DUMMY_LIST }
+                           "sel_sess": DUMMY_LIST, "sel_instr": DUMMY_LIST,   "sel_ptrm": DUMMY, "sel_attr": DUMMY_LIST,
+                           "sel_title": "",        "sel_from_cred": "",       "sel_to_cred": "", "begin_hh": 0, "begin_mi": 0, 
+                           "begin_ap": "a",        "end_hh": 0, "end_mi": 0,  "end_ap": "a",     "sel_levl": DUMMY_LIST }
+
+
+POSTGRES = psycopg2.connect(host="postgres.maccabee.io", dbname="maccabee", user="hanasi", password=os.environ["postgres_pass"])
 
 
 def get_values_from_select(select_data):
@@ -103,6 +108,7 @@ def parse_meeting_days(days):
 		"W":	"wednesday",
 		"R":	"thursday",
 		"F":	"friday",
+		"S":  "saturday",
 		"U":	"sunday",
 	}
 
@@ -112,17 +118,18 @@ def parse_meeting_days(days):
 
 
 def parse_course_meeting_times(schedule_data_table):
-	rows = schedule_data_table.find_all("tr")[1:]
 	
 	all_meetings = []
+
+	if not schedule_data_table:
+		return all_meetings
+
+	rows = schedule_data_table.find_all("tr")[1:]
 
 	for row in rows:
 		data = row.find_all("td")
 
 		class_times = parse_class_time(data[1].text)
-
-		if '\xa0' in data[2].text:
-			pprint(data)
 
 		meeting_days = parse_meeting_days(data[2].text)
 
@@ -143,9 +150,10 @@ def convert_term_to_shorthand(termstr):
 	term = termstr.split(" ")
 
 	term_to_month = {
-		"Fall": 	"09",
-		"Spring": "01",
-		"Summer": "06",
+		"Fall": 	    "09",
+		"Spring":     "01",
+		"Summer":     "06",
+		"Pre-Summer": "04"
 	}
 
 	shorthand = f"{term[1]}{term_to_month[term[0]]}"
@@ -155,7 +163,7 @@ def convert_term_to_shorthand(termstr):
 
 def parse_other_info(course_entry_text):
 	credits_re = re.compile("(\d{1,2}\.\d+)\s(?=Credits)")
-	campus_re = re.compile("(\w+)\s(?=Campus)")
+	campus_re = re.compile("(.+)\s(?=Campus)")
 	level_re = re.compile("(?<=Levels: )(.+)") 		# dear god this regex is a bad idea
 	term_re = re.compile("(?<=Associated Term:\s)(.+)")
 
@@ -167,7 +175,7 @@ def parse_other_info(course_entry_text):
 
 	campus_search = campus_re.search(course_entry_text)
 	if campus_search:
-		campus = campus_search.groups(0)[0].strip()
+		campus = campus_search.groups(0)[0].strip().replace("Campus", "")
 	else:
 		campus = ""
 	
@@ -185,9 +193,9 @@ def parse_other_info(course_entry_text):
 		associated_term = ""
 
 	other_info = {
-		"credits":	credits,
-		"campus":		campus,
-		"level":    level,
+		"credits":         credits,
+		"campus":          campus,
+		"available_to": 	 level,
 		"associated_term": associated_term,
 		"shorthand_term":  convert_term_to_shorthand(associated_term),
 	}
@@ -210,18 +218,25 @@ def cleanup_notes(notes):
 
 def parse_course(course_rows):
 	course_header = course_rows[0].text.strip()
-	course_header = course_header.split(" - ")
+	split_header = course_header.split(" - ")
 	
 	course_info = {
-		"course_title":		course_header[0],
-		"crn":						course_header[1],
-		"course_number":  course_header[2],
-		"section":        course_header[3],
+		"crn":						split_header[-3],
+		"course_number":  split_header[-2],
+		"section":        split_header[-1],
 	}
+
+	course_title = course_header[0:course_header.index(course_info["crn"])-3]
+
+	course_info["course_title"] = course_title
 
 	course_entry = course_rows[1]
 	course_entry = course_entry.find("td", class_="dddefault")
 	course_info["notes"] = course_entry.next.strip().replace("\n", " ")
+
+	split_subject = course_info["course_number"].split(" ")
+	course_info["course_department"] = split_subject[0]
+	course_info["course_level"] = split_subject[1]
 
 	other_info = parse_other_info(course_entry.text)
 
@@ -243,26 +258,59 @@ def parse_course(course_rows):
 	
 
 
-def insert_data_into_sql(semester, courses_for_semester):
-	pass
+def insert_courses_into_sql(courses_for_semester):
+	cursor = POSTGRES.cursor()
+	cfs = courses_for_semester
+
+	insert_string = """INSERT INTO course_info 
+	(associated_term, campus, course_number, 
+	course_title, credits, crn, available_to, 
+	meeting_times, notes, prerequisites, section,
+	shorthand_term, course_department, course_level)
+	VALUES
+	(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
+
+	insert_values = (
+		cfs["associated_term"], cfs["campus"], cfs["course_number"],
+		cfs["course_title"], cfs["credits"], cfs["crn"], cfs["available_to"],
+		json.dumps(cfs["meeting_times"]), cfs["notes"], cfs["prerequisites"],
+		cfs["section"], cfs["shorthand_term"], cfs["course_department"],
+		cfs["course_level"]
+	)
+
+	cursor.execute(insert_string, insert_values)
+	cursor.close()
+	
+	return
 
 
 if __name__ in "__main__":
 	terms = get_term_values()
 
-	subjects = get_subjects_for_semester(terms[1])
+	for term in terms[1:]:
+		print(term)
+		subjects = get_subjects_for_semester(term)
 
-	ids_courses = get_courses("IDS", "201901")
-	course_table = ids_courses.find("table", class_="datadisplaytable")
-	tbody = course_table.find("tbody")
+		subjects.pop(subjects.index("%"))
 
-	children = [ c for c in course_table.children if c.name == "tr" ]
+		for subject in subjects:
+			print(subject)
+			ids_courses = get_courses(subject, term)
+			course_table = ids_courses.find("table", class_="datadisplaytable")
+			tbody = course_table.find("tbody")
 
-	course_list = []
+			children = [ c for c in course_table.children if c.name == "tr" ]
 
-	for i in range(0, len(children), 2):
-		course_list.append(parse_course(children[i:i+2]))
+			course_list = []
 
-	for c in course_list:
-		pprint(c)
-		print("\n")
+			for i in range(0, len(children), 2):
+				course_list.append(parse_course(children[i:i+2]))
+
+			for c in course_list:
+				insert_courses_into_sql(c)
+			
+			POSTGRES.commit()
+			
+			print(f"Inserted {subject} for {term}\n")
+
+	POSTGRES.close()

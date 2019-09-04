@@ -7,6 +7,7 @@ lxml==4.4.1
 mysql-connector-python==8.0.17
 mysqlclient==1.4.4
 protobuf==3.9.1
+psycopg2==2.8.3
 python-dateutil==2.8.0
 requests==2.22.0
 six==1.12.0
